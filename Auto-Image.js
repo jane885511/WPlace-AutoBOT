@@ -1265,49 +1265,50 @@
 
       let finalBlob = blobData;
 
-      if (this.isEnabled && this.chunkedTiles.size > 0) {
-        const tileMatch = endpoint.match(/(\d+)\/(\d+)\.png/);
-        if (tileMatch) {
-          const tileX = parseInt(tileMatch[1], 10);
-          const tileY = parseInt(tileMatch[2], 10);
-          const tileKey = `${tileX},${tileY}`;
+      const tileMatch = endpoint.match(/(\d+)\/(\d+)\.png/);
+      if (tileMatch) {
+        const tileX = parseInt(tileMatch[1], 10);
+        const tileY = parseInt(tileMatch[2], 10);
+        const tileKey = `${tileX},${tileY}`;
 
-          const chunkBitmap = this.chunkedTiles.get(tileKey);
-          // Also store the original tile bitmap for later pixel color checks
+        // Always attempt to cache the original tile bitmap and its ImageData when we intercept a tile
+        // This allows pixel-read/skipping logic to work even when overlay compositing is disabled.
+        try {
+          const originalBitmap = await createImageBitmap(blobData);
+          this.originalTiles.set(tileKey, originalBitmap);
+          // Cache full ImageData for fast pixel access (avoid repeated drawImage/getImageData)
           try {
-            const originalBitmap = await createImageBitmap(blobData);
-            this.originalTiles.set(tileKey, originalBitmap);
-            // Cache full ImageData for fast pixel access (avoid repeated drawImage/getImageData)
-            try {
-              let canvas, ctx;
-              if (typeof OffscreenCanvas !== 'undefined') {
-                canvas = new OffscreenCanvas(originalBitmap.width, originalBitmap.height);
-                ctx = canvas.getContext('2d');
-              } else {
-                canvas = document.createElement('canvas');
-                canvas.width = originalBitmap.width;
-                canvas.height = originalBitmap.height;
-                ctx = canvas.getContext('2d');
-              }
-              ctx.imageSmoothingEnabled = false;
-              ctx.drawImage(originalBitmap, 0, 0);
-              const imgData = ctx.getImageData(0, 0, originalBitmap.width, originalBitmap.height);
-              // Store typed array copy to avoid retaining large canvas
-              this.originalTilesData.set(tileKey, { w: originalBitmap.width, h: originalBitmap.height, data: new Uint8ClampedArray(imgData.data) });
-            } catch (e) {
-              // If ImageData extraction fails, still keep the bitmap as fallback
-              console.warn('OverlayManager: could not cache ImageData for', tileKey, e);
+            let canvas, ctx;
+            if (typeof OffscreenCanvas !== 'undefined') {
+              canvas = new OffscreenCanvas(originalBitmap.width, originalBitmap.height);
+              ctx = canvas.getContext('2d');
+            } else {
+              canvas = document.createElement('canvas');
+              canvas.width = originalBitmap.width;
+              canvas.height = originalBitmap.height;
+              ctx = canvas.getContext('2d');
             }
+            ctx.imageSmoothingEnabled = false;
+            ctx.drawImage(originalBitmap, 0, 0);
+            const imgData = ctx.getImageData(0, 0, originalBitmap.width, originalBitmap.height);
+            // Store typed array copy to avoid retaining large canvas
+            this.originalTilesData.set(tileKey, { w: originalBitmap.width, h: originalBitmap.height, data: new Uint8ClampedArray(imgData.data) });
           } catch (e) {
-            console.warn('OverlayManager: could not create original bitmap for', tileKey, e);
+            // If ImageData extraction fails, still keep the bitmap as fallback
+            console.warn('OverlayManager: could not cache ImageData for', tileKey, e);
           }
+        } catch (e) {
+          console.warn('OverlayManager: could not create original bitmap for', tileKey, e);
+        }
+
+        // If overlay is enabled and we have a precomputed chunk for this tile, composite it.
+        if (this.isEnabled && this.chunkedTiles.size > 0) {
+          const chunkBitmap = this.chunkedTiles.get(tileKey);
           if (chunkBitmap) {
             try {
-              // Use faster compositing for better performance
               finalBlob = await this._compositeTileOptimized(blobData, chunkBitmap);
             } catch (e) {
               console.error("Error compositing overlay:", e);
-              // Fallback to original tile on error
               finalBlob = blobData;
             }
           }
